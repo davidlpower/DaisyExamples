@@ -149,12 +149,7 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
             default: outl = outr = 0;
         }
 
-        out[i] = outl;
-        out[i + 1] = outr;
-    }
-}
-
-        out[i] = outl;
+        out[i]     = outl;
         out[i + 1] = outr;
     }
 }
