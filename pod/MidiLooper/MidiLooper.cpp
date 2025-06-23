@@ -70,8 +70,10 @@ void UpdateEncoder()
 
 void UpdateLeds(float k1, float k2)
 {
-    pod.led1.Set(k1, k1, k1);
+    pod.led1.Set(k1, k1, k1); // brightness = value on all channels
     pod.led2.Set(k2, k2, k2);
+    pod.UpdateLeds();
+}
     pod.UpdateLeds();
 }
 
@@ -99,7 +101,7 @@ void Controls()
             break;
     }
 
-    UpdateLeds(drywet, feedback);
+    UpdateLeds(knob_drywet, knob_feedback);
 }
 
 void GetReverbSample(float &outl, float &outr, float inl, float inr)
