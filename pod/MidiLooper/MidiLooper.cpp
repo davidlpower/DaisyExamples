@@ -1,6 +1,10 @@
-#include "daisysp.h"
-#include "daisy_pod.h"
 #include <cstdio>
+
+// MIDI CC Assignments
+#define MIDI_CC_DRYWET     10  // Controls dry/wet mix for reverb
+#define MIDI_CC_FEEDBACK   11  // Controls feedback amount for delay or reverb
+#define MIDI_CC_DELAY_MS   12  // Controls delay time in milliseconds
+#define MIDI_CC_MODE_CHANGE 13 // Controls effect mode: increment/decrement effect type
 
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
 #define REV 0
@@ -75,10 +79,10 @@ void Controls()
     pod.ProcessDigitalControls();
 
     UpdateKnobs();
-    UpdateEncoder();
 
-    // Select source
     bool midi_newer = last_midi_update > last_knob_update;
+    if(!midi_newer)
+        UpdateEncoder();
 
     switch(mode)
     {
@@ -153,6 +157,18 @@ void HandleMidiMessage(MidiEvent m)
                 case 10: midi_drywet = p.value / 127.0f; break;
                 case 11: midi_feedback = p.value / 127.0f; break;
                 case 12: midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
+                case 13:
+                {
+                    int delta = 0;
+                    if(p.value < 63) delta = -1;
+                    else if(p.value > 64) delta = 1;
+                    if(delta != 0)
+                    {
+                        mode += delta;
+                        mode = (mode % 2 + 2) % 2;
+                    }
+                    break;
+                }
                 default: break;
             }
             last_midi_update = System::GetNow();
