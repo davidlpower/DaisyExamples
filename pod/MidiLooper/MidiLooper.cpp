@@ -1,5 +1,6 @@
 #include "daisysp.h"
 #include "daisy_pod.h"
+#include <cstdio>
 
 // Set max delay time to 0.75 of samplerate.
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
@@ -71,6 +72,7 @@ void HandleMidiMessage(MidiEvent m)
         case ControlChange:
         {
             ControlChangeEvent p = m.AsControlChange();
+            printf(p);
             // switch(p.control_number)
             // {
             //     case 1:
