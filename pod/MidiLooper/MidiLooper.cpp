@@ -70,8 +70,16 @@ void UpdateEncoder()
 
 void UpdateLeds(float k1, float k2)
 {
-    pod.led1.Set(k1, k1, k1); // brightness = value on all channels
-    pod.led2.Set(k2, k2, k2);
+    if(mode == REV)
+    {
+        pod.led1.Set(0.0f, 0.0f, k1); // Blue for drywet
+        pod.led2.Set(0.0f, k2, 0.0f); // Green for feedback
+    }
+    else if(mode == DEL)
+    {
+        pod.led1.Set(k1, 0.0f, 0.0f); // Red for delay time
+        pod.led2.Set(0.0f, k2, 0.0f); // Green for feedback
+    }
     pod.UpdateLeds();
 }
 
@@ -129,8 +137,6 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                    size_t size)
 {
     float outl, outr, inl, inr;
-    Controls();
-
     for(size_t i = 0; i < size; i += 2)
     {
         inl = in[i];
@@ -142,6 +148,11 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
             case DEL: GetDelaySample(outl, outr, inl, inr); break;
             default: outl = outr = 0;
         }
+
+        out[i] = outl;
+        out[i + 1] = outr;
+    }
+}
 
         out[i] = outl;
         out[i + 1] = outr;
@@ -212,6 +223,7 @@ int main(void)
 
     while(1)
     {
+        Controls();
         pod.midi.Listen();
         while(pod.midi.HasEvents())
         {
