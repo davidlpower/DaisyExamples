@@ -2,142 +2,58 @@
 #include "daisy_pod.h"
 #include <cstdio>
 
-// Set max delay time to 0.75 of samplerate.
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
 #define REV 0
 #define DEL 1
-
 
 using namespace daisysp;
 using namespace daisy;
 
 static DaisyPod pod;
 
-static ReverbSc                                  rev;
+static ReverbSc rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
-static Tone                                      tone;
-static Parameter deltime, cutoffParam, crushrate;
-int              mode = REV;
+static Tone tone;
+static Parameter deltime;
 
-float currentDelay, feedback, delayTarget, cutoff;
+int mode = REV;
 
+float drywet, feedback, delayTarget, cutoff;
+float currentDelay;
 
-float  drywet;
+// Knob values
+float knob_drywet = 0.5f;
+float knob_feedback = 0.5f;
+float knob_delay_ms = 750.0f;
 
+// MIDI values
+float midi_drywet = 0.5f;
+float midi_feedback = 0.5f;
+float midi_delay_ms = 750.0f;
 
-//Helper functions
-void Controls();
+// Timestamps
+uint32_t last_knob_update = 0;
+uint32_t last_midi_update = 0;
 
-void GetReverbSample(float &outl, float &outr, float inl, float inr);
-
-void GetDelaySample(float &outl, float &outr, float inl, float inr);
-
-
-void AudioCallback(AudioHandle::InterleavingInputBuffer  in,
-                   AudioHandle::InterleavingOutputBuffer out,
-                   size_t                                size)
+void UpdateKnobs()
 {
-    float outl, outr, inl, inr;
-
-    Controls();
-
-    //audio
-    for(size_t i = 0; i < size; i += 2)
-    {
-        inl = in[i];
-        inr = in[i + 1];
-
-        switch(mode)
-        {
-            case REV: GetReverbSample(outl, outr, inl, inr); break;
-            case DEL: GetDelaySample(outl, outr, inl, inr); break;
-            default: outl = outr = 0;
-        }
-
-        // left out
-        out[i] = outl;
-
-        // right out
-        out[i + 1] = outr;
-    }
-}
-
-// Typical Switch case for Message Type.
-void HandleMidiMessage(MidiEvent m)
-{
-    switch(m.type)
-    {
-        case ControlChange:
-        {
-            ControlChangeEvent p = m.AsControlChange();
-            // switch(p.control_number)
-            // {
-            //     case 1:
-            //         // CC 1 for cutoff.f
-            //         filt.SetFreq(mtof((float)p.value));
-            //         break;
-            //     case 2:
-            //         // CC 2 for res.
-            //         filt.SetRes(((float)p.value / 127.0f));
-            //         break;
-            //     default: break;
-            // }
-            break;
-        }
-        default: break;
-    }
-}
-
-int main(void)
-{
-	// initialize pod hardware and oscillator daisysp module
-    float sample_rate;
-
-    //Inits and sample rate
-    pod.Init();
-    pod.SetAudioBlockSize(4);
-    sample_rate = pod.AudioSampleRate();
-    rev.Init(sample_rate);
-    dell.Init();
-    delr.Init();
-
-    //set parameters
-    deltime.Init(pod.knob1, sample_rate * .05, MAX_DELAY, deltime.LOGARITHMIC);
-
-    //reverb parameters
-    rev.SetLpFreq(18000.0f);
-    rev.SetFeedback(0.85f);
-
-    //delay parameters
-    currentDelay = delayTarget = sample_rate * 0.75f;
-    dell.SetDelay(currentDelay);
-    delr.SetDelay(currentDelay);
-
-    // start callback
-    pod.StartAdc();
-    pod.StartAudio(AudioCallback);
-	pod.midi.Listen();
-    
-	while(1) {}
-}
-
-void UpdateKnobs(float &k1, float &k2)
-{
-    k1 = pod.knob1.Process();
-    k2 = pod.knob2.Process();
+    float k1 = pod.knob1.Process();
+    float k2 = pod.knob2.Process();
 
     switch(mode)
     {
         case REV:
-            drywet = k1;
-            rev.SetFeedback(k2);
+            knob_drywet = k1;
+            knob_feedback = k2;
             break;
         case DEL:
-            delayTarget = deltime.Process();
-            feedback    = k2;
+            knob_delay_ms = deltime.Process() / pod.AudioSampleRate() * 1000.0f;
+            knob_feedback = k2;
             break;
     }
+
+    last_knob_update = System::GetNow();
 }
 
 void UpdateEncoder()
@@ -148,27 +64,35 @@ void UpdateEncoder()
 
 void UpdateLeds(float k1, float k2)
 {
-    pod.led1.Set(
-        k1 * (mode == 2), k1 * (mode == 1), k1 * (mode == 0 || mode == 2));
-    pod.led2.Set(
-        k2 * (mode == 2), k2 * (mode == 1), k2 * (mode == 0 || mode == 2));
-
+    pod.led1.Set(k1 * (mode == 2), k1 * (mode == 1), k1 * (mode == 0 || mode == 2));
+    pod.led2.Set(k2 * (mode == 2), k2 * (mode == 1), k2 * (mode == 0 || mode == 2));
     pod.UpdateLeds();
 }
 
 void Controls()
 {
-    float k1, k2;
-    delayTarget = feedback = drywet = 0;
-
     pod.ProcessAnalogControls();
     pod.ProcessDigitalControls();
 
-    UpdateKnobs(k1, k2);
-
+    UpdateKnobs();
     UpdateEncoder();
 
-    UpdateLeds(k1, k2);
+    // Select source
+    bool midi_newer = last_midi_update > last_knob_update;
+
+    switch(mode)
+    {
+        case REV:
+            drywet = midi_newer ? midi_drywet : knob_drywet;
+            rev.SetFeedback(midi_newer ? midi_feedback : knob_feedback);
+            break;
+        case DEL:
+            feedback = midi_newer ? midi_feedback : knob_feedback;
+            delayTarget = pod.AudioSampleRate() * ((midi_newer ? midi_delay_ms : knob_delay_ms) / 1000.0f);
+            break;
+    }
+
+    UpdateLeds(drywet, feedback);
 }
 
 void GetReverbSample(float &outl, float &outr, float inl, float inr)
@@ -191,4 +115,83 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr)
 
     delr.Write((feedback * outr) + inr);
     outr = (feedback * outr) + ((1.0f - feedback) * inr);
+}
+
+void AudioCallback(AudioHandle::InterleavingInputBuffer in,
+                   AudioHandle::InterleavingOutputBuffer out,
+                   size_t size)
+{
+    float outl, outr, inl, inr;
+    Controls();
+
+    for(size_t i = 0; i < size; i += 2)
+    {
+        inl = in[i];
+        inr = in[i + 1];
+
+        switch(mode)
+        {
+            case REV: GetReverbSample(outl, outr, inl, inr); break;
+            case DEL: GetDelaySample(outl, outr, inl, inr); break;
+            default: outl = outr = 0;
+        }
+
+        out[i] = outl;
+        out[i + 1] = outr;
+    }
+}
+
+void HandleMidiMessage(MidiEvent m)
+{
+    switch(m.type)
+    {
+        case ControlChange:
+        {
+            ControlChangeEvent p = m.AsControlChange();
+            switch(p.control_number)
+            {
+                case 10: midi_drywet = p.value / 127.0f; break;
+                case 11: midi_feedback = p.value / 127.0f; break;
+                case 12: midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
+                default: break;
+            }
+            last_midi_update = System::GetNow();
+            break;
+        }
+        default: break;
+    }
+}
+
+int main(void)
+{
+    float sample_rate;
+    pod.Init();
+    pod.SetAudioBlockSize(4);
+    sample_rate = pod.AudioSampleRate();
+
+    rev.Init(sample_rate);
+    dell.Init();
+    delr.Init();
+
+    deltime.Init(pod.knob1, sample_rate * .05f, MAX_DELAY, deltime.LOGARITHMIC);
+
+    rev.SetLpFreq(18000.0f);
+    rev.SetFeedback(0.85f);
+
+    currentDelay = delayTarget = sample_rate * 0.75f;
+    dell.SetDelay(currentDelay);
+    delr.SetDelay(currentDelay);
+
+    pod.StartAdc();
+    pod.StartAudio(AudioCallback);
+    pod.midi.StartReceive();
+
+    while(1)
+    {
+        pod.midi.Listen();
+        while(pod.midi.HasEvents())
+        {
+            HandleMidiMessage(pod.midi.PopEvent());
+        }
+    }
 }

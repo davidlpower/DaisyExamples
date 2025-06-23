@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # recompiles all Make-based projects within the repository
 # excluding any that are located within the specified excluded
