@@ -2,11 +2,10 @@
 #include "daisy_pod.h"
 #include <cstdio>
 
-// MIDI CC Assignments
-#define MIDI_CC_DRYWET     10  // Controls dry/wet mix for reverb
-#define MIDI_CC_FEEDBACK   11  // Controls feedback amount for delay or reverb
-#define MIDI_CC_DELAY_MS   12  // Controls delay time in milliseconds
-#define MIDI_CC_MODE_CHANGE 13 // Controls effect mode: increment/decrement effect type
+#define MIDI_CC_DRYWET     10
+#define MIDI_CC_FEEDBACK   11
+#define MIDI_CC_DELAY_MS   12
+#define MIDI_CC_MODE_CHANGE 13
 
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
 #define REV 0
@@ -24,27 +23,24 @@ static Parameter deltime;
 
 int mode = REV;
 
-float drywet, feedback, delayTarget, cutoff;
+float drywet, feedback, delayTarget;
 float currentDelay;
 
-// Knob values
 float knob_drywet = 0.5f;
 float knob_feedback = 0.5f;
 float knob_delay_ms = 750.0f;
 
-// MIDI values
 float midi_drywet = 0.5f;
 float midi_feedback = 0.5f;
 float midi_delay_ms = 750.0f;
 
-// Timestamps
 uint32_t last_knob_update = 0;
 uint32_t last_midi_update = 0;
 
-void UpdateKnobs()
+void UpdateKnobs(float &k1, float &k2)
 {
-    float k1 = pod.knob1.Process();
-    float k2 = pod.knob2.Process();
+    k1 = pod.knob1.Process();
+    k2 = pod.knob2.Process();
 
     switch(mode)
     {
@@ -57,43 +53,40 @@ void UpdateKnobs()
             knob_feedback = k2;
             break;
     }
-
     last_knob_update = System::GetNow();
 }
 
 void UpdateEncoder()
 {
-    mode = mode + pod.encoder.Increment();
-    if(mode < 0) mode = 1;
-    if(mode > 1) mode = 0;
+    mode += pod.encoder.Increment();
+    mode = (mode % 2 + 2) % 2;
 }
 
 void UpdateLeds(float k1, float k2)
 {
     if(mode == REV)
     {
-        pod.led1.Set(0.0f, 0.0f, k1); // Blue for drywet
-        pod.led2.Set(0.0f, k2, 0.0f); // Green for feedback
+        pod.led1.Set(0.0f, 0.0f, k1); // Blue
+        pod.led2.Set(0.0f, 0.0f, k2); // Blue
     }
     else if(mode == DEL)
     {
-        pod.led1.Set(k1, 0.0f, 0.0f); // Red for delay time
-        pod.led2.Set(0.0f, k2, 0.0f); // Green for feedback
+        pod.led1.Set(0.0f, k1, 0.0f); // Green
+        pod.led2.Set(0.0f, k2, 0.0f); // Green
     }
     pod.UpdateLeds();
 }
 
-
 void Controls()
 {
+    float k1 = 0.0f, k2 = 0.0f;
     pod.ProcessAnalogControls();
     pod.ProcessDigitalControls();
 
-    UpdateKnobs();
+    UpdateKnobs(k1, k2);
+    UpdateEncoder();
 
     bool midi_newer = last_midi_update > last_knob_update;
-    if(!midi_newer)
-        UpdateEncoder();
 
     switch(mode)
     {
@@ -106,7 +99,6 @@ void Controls()
             delayTarget = pod.AudioSampleRate() * ((midi_newer ? midi_delay_ms : knob_delay_ms) / 1000.0f);
             break;
     }
-
     UpdateLeds(midi_newer ? midi_drywet : knob_drywet, midi_newer ? midi_feedback : knob_feedback);
 }
 
@@ -122,6 +114,7 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr)
     fonepole(currentDelay, delayTarget, .00007f);
     delr.SetDelay(currentDelay);
     dell.SetDelay(currentDelay);
+
     outl = dell.Read();
     outr = delr.Read();
 
@@ -137,6 +130,9 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                    size_t size)
 {
     float outl, outr, inl, inr;
+
+    Controls();
+
     for(size_t i = 0; i < size; i += 2)
     {
         inl = in[i];
@@ -149,7 +145,7 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
             default: outl = outr = 0;
         }
 
-        out[i]     = outl;
+        out[i] = outl;
         out[i + 1] = outr;
     }
 }
@@ -199,7 +195,6 @@ int main(void)
     delr.Init();
 
     deltime.Init(pod.knob1, sample_rate * .05f, MAX_DELAY, deltime.LOGARITHMIC);
-
     rev.SetLpFreq(18000.0f);
     rev.SetFeedback(0.85f);
 
@@ -208,17 +203,11 @@ int main(void)
     delr.SetDelay(currentDelay);
 
     pod.StartAdc();
-    // Set initial values for audio path
-    drywet = knob_drywet;
-    feedback = knob_feedback;
-    delayTarget = sample_rate * (knob_delay_ms / 1000.0f);
-
     pod.StartAudio(AudioCallback);
     pod.midi.StartReceive();
 
     while(1)
     {
-        Controls();
         pod.midi.Listen();
         while(pod.midi.HasEvents())
         {
