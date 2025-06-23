@@ -20,7 +20,6 @@ static DaisyPod pod;
 static ReverbSc rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
-static Tone tone;
 static Parameter deltime;
 
 int mode = REV;
@@ -71,22 +70,11 @@ void UpdateEncoder()
 
 void UpdateLeds(float k1, float k2)
 {
-    // Simple LED feedback per control value
     pod.led1.Set(k1, k1, k1);
     pod.led2.Set(k2, k2, k2);
     pod.UpdateLeds();
 }
-    else if(mode == DEL)
-    {
-        // Red for delay time, Green for feedback
-        r1 = k1;
-        g2 = k2;
-    }
 
-    pod.led1.Set(r1, g1, b1);
-    pod.led2.Set(r2, g2, b2);
-    pod.UpdateLeds();
-}
 
 void Controls()
 {
@@ -169,10 +157,10 @@ void HandleMidiMessage(MidiEvent m)
             ControlChangeEvent p = m.AsControlChange();
             switch(p.control_number)
             {
-                case 10: midi_drywet = p.value / 127.0f; break;
-                case 11: midi_feedback = p.value / 127.0f; break;
-                case 12: midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
-                case 13:
+                case MIDI_CC_DRYWET: midi_drywet = p.value / 127.0f; break;
+                case MIDI_CC_FEEDBACK: midi_feedback = p.value / 127.0f; break;
+                case MIDI_CC_DELAY_MS: midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
+                case MIDI_CC_MODE_CHANGE:
                 {
                     int delta = 0;
                     if(p.value < 63) delta = -1;
