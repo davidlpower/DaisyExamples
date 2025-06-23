@@ -6,7 +6,6 @@
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
 #define REV 0
 #define DEL 1
-#define CRU 2
 
 
 using namespace daisysp;
@@ -72,7 +71,6 @@ void HandleMidiMessage(MidiEvent m)
         case ControlChange:
         {
             ControlChangeEvent p = m.AsControlChange();
-            printf(p);
             // switch(p.control_number)
             // {
             //     case 1:
