@@ -1,6 +1,8 @@
 # Project Name
 TARGET = MidiLooper
 
+USE_DAISYSP_LGPL = 1
+
 # Sources
 CPP_SOURCES = MidiLooper.cpp
 
