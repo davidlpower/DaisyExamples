@@ -1,5 +1,5 @@
-#include "daisy_pod.h"
 #include "daisysp.h"
+#include "daisy_pod.h"
 
 // Set max delay time to 0.75 of samplerate.
 #define MAX_DELAY static_cast<size_t>(48000 * 2.5f)
@@ -7,19 +7,24 @@
 #define DEL 1
 #define CRU 2
 
-using namespace daisy;
-using namespace daisysp;
 
-DaisyPod pod;
+using namespace daisysp;
+using namespace daisy;
+
+static DaisyPod pod;
 
 static ReverbSc                                  rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
-static Parameter 								 deltime;
+static Tone                                      tone;
+static Parameter deltime, cutoffParam, crushrate;
 int              mode = REV;
 
 float currentDelay, feedback, delayTarget, cutoff;
+
+
 float  drywet;
+
 
 //Helper functions
 void Controls();
@@ -27,6 +32,7 @@ void Controls();
 void GetReverbSample(float &outl, float &outr, float inl, float inr);
 
 void GetDelaySample(float &outl, float &outr, float inl, float inr);
+
 
 void AudioCallback(AudioHandle::InterleavingInputBuffer  in,
                    AudioHandle::InterleavingOutputBuffer out,
