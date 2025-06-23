@@ -1,3 +1,5 @@
+#include "daisysp.h"
+#include "daisy_pod.h"
 #include <cstdio>
 
 // MIDI CC Assignments
