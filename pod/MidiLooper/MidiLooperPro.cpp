@@ -22,9 +22,8 @@ static DaisyPod pod;
 static ReverbSc rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
-
-float DSY_SDRAM_BSS loop_buf_l[MAX_LOOP];
-float DSY_SDRAM_BSS loop_buf_r[MAX_LOOP];
+static DelayLine<float, MAX_LOOP> DSY_SDRAM_BSS loopl;
+static DelayLine<float, MAX_LOOP> DSY_SDRAM_BSS loopr;
 
 static Parameter deltime;
 
@@ -47,7 +46,6 @@ uint32_t last_midi_update = 0;
 enum LoopState { LOOP_IDLE, LOOP_RECORDING, LOOP_PLAYING, LOOP_OVERDUBBING };
 LoopState loop_state = LOOP_IDLE;
 size_t loop_write_pos = 0;
-size_t loop_read_pos = 0;
 size_t loop_length = 0;
 
 void UpdateKnobs(float &k1, float &k2)
@@ -62,7 +60,7 @@ void UpdateKnobs(float &k1, float &k2)
             knob_feedback = k2;
             break;
         case DEL:
-            knob_delay_ms = (1.0f - pod.knob1.Process()) * (MAX_DELAY / pod.AudioSampleRate()) * 1000.0f;
+            knob_delay_ms = deltime.Process() / pod.AudioSampleRate() * 1000.0f;
             knob_feedback = k2;
             break;
         case LOOP:
@@ -106,22 +104,10 @@ void Controls()
     {
         switch(loop_state)
         {
-            case LOOP_IDLE:
-                loop_state = LOOP_RECORDING;
-                loop_write_pos = 0;
-                break;
-            case LOOP_RECORDING:
-                loop_state = LOOP_PLAYING;
-                loop_length = loop_write_pos;
-                loop_write_pos = 0;
-                loop_read_pos = 0;
-                break;
-            case LOOP_PLAYING:
-                loop_state = LOOP_OVERDUBBING;
-                break;
-            case LOOP_OVERDUBBING:
-                loop_state = LOOP_PLAYING;
-                break;
+            case LOOP_IDLE:        loop_state = LOOP_RECORDING; loop_write_pos = 0; break;
+            case LOOP_RECORDING:   loop_state = LOOP_PLAYING; loop_length = loop_write_pos; loop_write_pos = 0; loopl.SetRead(0); loopr.SetRead(0); break;
+            case LOOP_PLAYING:     loop_state = LOOP_OVERDUBBING; break;
+            case LOOP_OVERDUBBING: loop_state = LOOP_PLAYING; break;
         }
     }
 
@@ -174,56 +160,56 @@ void GetLoopSample(float &outl, float &outr, float inl, float inr)
     switch(loop_state)
     {
         case LOOP_RECORDING:
-            if(loop_write_pos < MAX_LOOP)
+            loopl.Write(inl);
+            loopr.Write(inr);
+            loopl.Increment();
+            loopr.Increment();
+            loop_write_pos++;
+            if(loop_write_pos >= MAX_LOOP)
             {
-                loop_buf_l[loop_write_pos] = inl;
-                loop_buf_r[loop_write_pos] = inr;
-                ++loop_write_pos;
-                outl = inl;
-                outr = inr;
-            }
-            else
-            {
-                loop_state = LOOP_PLAYING;
                 loop_length = MAX_LOOP;
-                loop_read_pos = 0;
-                outl = inl;
-                outr = inr;
+                loop_state = LOOP_PLAYING;
+                loop_write_pos = 0;
+                loopl.SetRead(0);
+                loopr.SetRead(0);
             }
+            outl = inl;
+            outr = inr;
             break;
 
         case LOOP_PLAYING:
-            if(loop_length == 0) {
-                outl = 0.0f;
-                outr = 0.0f;
-            } else {
-                outl = loop_buf_l[loop_read_pos];
-                outr = loop_buf_r[loop_read_pos];
-                loop_read_pos = (loop_read_pos + 1) % loop_length;
+            outl = loopl.Read();
+            outr = loopr.Read();
+            loopl.Increment();
+            loopr.Increment();
+            loop_write_pos++;
+            if(loop_write_pos >= loop_length)
+            {
+                loop_write_pos = 0;
+                loopl.SetRead(0);
+                loopr.SetRead(0);
             }
             break;
 
         case LOOP_OVERDUBBING:
-            if(loop_length == 0) {
-                outl = inl;
-                outr = inr;
-            } else {
-                float existing_l = loop_buf_l[loop_read_pos];
-                float existing_r = loop_buf_r[loop_read_pos];
-                float mixed_l = 0.5f * (existing_l + inl);
-                float mixed_r = 0.5f * (existing_r + inr);
-                loop_buf_l[loop_read_pos] = mixed_l;
-                loop_buf_r[loop_read_pos] = mixed_r;
-                outl = mixed_l;
-                outr = mixed_r;
-                loop_read_pos = (loop_read_pos + 1) % loop_length;
+            outl = loopl.Read();
+            outr = loopr.Read();
+            loopl.Write(0.5f * (inl + outl));
+            loopr.Write(0.5f * (inr + outr));
+            loopl.Increment();
+            loopr.Increment();
+            loop_write_pos++;
+            if(loop_write_pos >= loop_length)
+            {
+                loop_write_pos = 0;
+                loopl.SetRead(0);
+                loopr.SetRead(0);
             }
             break;
 
-        case LOOP_IDLE:
         default:
-            outl = 0.0f;
-            outr = 0.0f;
+            outl = inl;
+            outr = inr;
             break;
     }
 }
@@ -292,23 +278,19 @@ int main(void)
     rev.Init(sample_rate);
     dell.Init();
     delr.Init();
+    loopl.Init();
+    loopr.Init();
 
-    for(size_t i = 0; i < MAX_DELAY; ++i) {
-        dell.Write(0.0f);
-        delr.Write(0.0f);
-    }
-    for(size_t i = 0; i < MAX_LOOP; ++i) {
-        loop_buf_l[i] = 0.0f;
-        loop_buf_r[i] = 0.0f;
-    }
-
-    deltime.Init(pod.knob1, MAX_DELAY, sample_rate * .05f, deltime.LOGARITHMIC);
+    deltime.Init(pod.knob1, sample_rate * .05f, MAX_DELAY, deltime.LOGARITHMIC);
     rev.SetLpFreq(18000.0f);
     rev.SetFeedback(0.85f);
 
     currentDelay = delayTarget = sample_rate * 0.75f;
     dell.SetDelay(currentDelay);
     delr.SetDelay(currentDelay);
+
+    loopl.SetDelay(MAX_LOOP);
+    loopr.SetDelay(MAX_LOOP);
 
     pod.StartAdc();
     pod.StartAudio(AudioCallback);

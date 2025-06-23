@@ -1,10 +1,14 @@
-# Project Name
-TARGET = MidiLooper
+# Project Names
+BASE_TARGET = MidiLooper
+TARGET := $(BASE_TARGET)
+ifeq ($(PRO),1)
+	TARGET := $(BASE_TARGET)Pro
+endif
 
 USE_DAISYSP_LGPL = 1
 
 # Sources
-CPP_SOURCES = MidiLooper.cpp
+CPP_SOURCES = $(BASE_TARGET).cpp
 
 # Library Locations
 LIBDAISY_DIR = ../../libDaisy/
@@ -16,8 +20,14 @@ include $(SYSTEM_FILES_DIR)/Makefile
 
 # -------------------------------------------------
 # Flash full binary via USB DFU (built-in bootloader)
+# Usage: make my_program_dfu or make pro_program_dfu PRO=1
 # -------------------------------------------------
 my_program_dfu:
 	dfu-util -a 0 -d 0483:df11 \
 	        --dfuse-address 0x08000000:leave \
-	        -D build/$(TARGET).bin
+	        -D build/$(BASE_TARGET).bin
+
+pro_program_dfu:
+	dfu-util -a 0 -d 0483:df11 \
+	        --dfuse-address 0x08000000:leave \
+	        -D build/$(BASE_TARGET)Pro.bin
