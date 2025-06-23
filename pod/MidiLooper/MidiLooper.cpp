@@ -65,13 +65,26 @@ void UpdateKnobs()
 void UpdateEncoder()
 {
     mode = mode + pod.encoder.Increment();
-    mode = (mode % 2 + 2) % 2;
+    if(mode < 0) mode = 1;
+    if(mode > 1) mode = 0;
 }
 
 void UpdateLeds(float k1, float k2)
 {
-    pod.led1.Set(k1 * (mode == 2), k1 * (mode == 1), k1 * (mode == 0 || mode == 2));
-    pod.led2.Set(k2 * (mode == 2), k2 * (mode == 1), k2 * (mode == 0 || mode == 2));
+    // Simple LED feedback per control value
+    pod.led1.Set(k1, k1, k1);
+    pod.led2.Set(k2, k2, k2);
+    pod.UpdateLeds();
+}
+    else if(mode == DEL)
+    {
+        // Red for delay time, Green for feedback
+        r1 = k1;
+        g2 = k2;
+    }
+
+    pod.led1.Set(r1, g1, b1);
+    pod.led2.Set(r2, g2, b2);
     pod.UpdateLeds();
 }
 
@@ -201,6 +214,11 @@ int main(void)
     delr.SetDelay(currentDelay);
 
     pod.StartAdc();
+    // Set initial values for audio path
+    drywet = knob_drywet;
+    feedback = knob_feedback;
+    delayTarget = sample_rate * (knob_delay_ms / 1000.0f);
+
     pod.StartAudio(AudioCallback);
     pod.midi.StartReceive();
 
