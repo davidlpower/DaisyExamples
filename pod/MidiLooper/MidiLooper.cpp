@@ -74,8 +74,6 @@ void UpdateLeds(float k1, float k2)
     pod.led2.Set(k2, k2, k2);
     pod.UpdateLeds();
 }
-    pod.UpdateLeds();
-}
 
 
 void Controls()
@@ -101,7 +99,7 @@ void Controls()
             break;
     }
 
-    UpdateLeds(knob_drywet, knob_feedback);
+    UpdateLeds(midi_newer ? midi_drywet : knob_drywet, midi_newer ? midi_feedback : knob_feedback);
 }
 
 void GetReverbSample(float &outl, float &outr, float inl, float inr)
