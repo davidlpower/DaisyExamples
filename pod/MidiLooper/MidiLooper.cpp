@@ -52,6 +52,7 @@ size_t loop_length = 0;
 
 void UpdateKnobs(float &k1, float &k2)
 {
+    k1 = pod.knob1.Process();
     k2 = pod.knob2.Process();
 
     switch(mode)
@@ -62,7 +63,7 @@ void UpdateKnobs(float &k1, float &k2)
             knob_feedback = k2;
             break;
         case DEL:
-            knob_delay_ms = (1.0f - pod.knob1.Process()) * (MAX_DELAY / pod.AudioSampleRate()) * 1000.0f;
+            knob_delay_ms = (1.0f) * (MAX_DELAY / pod.AudioSampleRate()) * 1000.0f;
             knob_feedback = k2;
             break;
         case LOOP:
@@ -137,7 +138,8 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                    size_t size)
 {
     float outl, outr, inl, inr;
-
+    Controls();
+    
     for(size_t i = 0; i < size; i += 2)
     {
         inl = in[i];
@@ -216,7 +218,5 @@ int main(void)
         pod.midi.Listen();
         while(pod.midi.HasEvents())
             HandleMidiMessage(pod.midi.PopEvent());
-
-        Controls();
     }
 }
