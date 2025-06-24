@@ -23,11 +23,100 @@ static ReverbSc rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
 
-float DSY_SDRAM_BSS loop_buf_l[MAX_LOOP];
-float DSY_SDRAM_BSS loop_buf_r[MAX_LOOP];
+float DSY_SDRAM_BSS loop_bufA_l[MAX_LOOP];
+float DSY_SDRAM_BSS loop_bufA_r[MAX_LOOP];
+float DSY_SDRAM_BSS loop_bufB_l[MAX_LOOP];
+float DSY_SDRAM_BSS loop_bufB_r[MAX_LOOP];
+
+struct LoopEngine {
+    float* buffer_l;
+    float* buffer_r;
+    size_t write_pos = 0;
+    size_t read_pos = 0;
+    size_t length = 0;
+    bool write_enable = false;
+    enum State { IDLE, RECORDING, PLAYING, OVERDUBBING } state = IDLE;
+    float gain_out = 1.0f;
+
+    void Reset() {
+        write_pos = read_pos = length = 0;
+        state = IDLE;
+        write_enable = false;
+    }
+
+    void StartRecording() {
+        write_pos = 0;
+        state = RECORDING;
+    }
+
+    void StopRecording() {
+        length = write_pos;
+        read_pos = 0;
+        state = PLAYING;
+    }
+
+    void ToggleOverdub() {
+        if(state == PLAYING)
+            state = OVERDUBBING;
+        else if(state == OVERDUBBING)
+            state = PLAYING;
+    }
+
+    void Process(float& outl, float& outr, float inl, float inr) {
+        switch(state)
+        {
+            case RECORDING:
+                if(write_pos < MAX_LOOP) {
+                    buffer_l[write_pos] = inl;
+                    buffer_r[write_pos] = inr;
+                    ++write_pos;
+                } else {
+                    StopRecording();
+                }
+                outl = inl;
+                outr = inr;
+                break;
+
+            case PLAYING:
+                if(length == 0) {
+                    outl = outr = 0.0f;
+                } else {
+                    outl = buffer_l[read_pos];
+                    outr = buffer_r[read_pos];
+                    read_pos = (read_pos + 1) % length;
+                }
+                break;
+
+            case OVERDUBBING:
+                if(length == 0) {
+                    outl = inl;
+                    outr = inr;
+                } else {
+                    float existing_l = buffer_l[read_pos];
+                    float existing_r = buffer_r[read_pos];
+                    float mixed_l = 0.5f * (existing_l + inl);
+                    float mixed_r = 0.5f * (existing_r + inr);
+                    buffer_l[read_pos] = mixed_l;
+                    buffer_r[read_pos] = mixed_r;
+                    outl = mixed_l;
+                    outr = mixed_r;
+                    read_pos = (read_pos + 1) % length;
+                }
+                break;
+
+            case IDLE:
+            default:
+                outl = outr = 0.0f;
+                break;
+        }
+    }
+};
+
+LoopEngine loopA = { loop_bufA_l, loop_bufA_r };
+LoopEngine loopB = { loop_bufB_l, loop_bufB_r };
+LoopEngine* focused_loop = &loopA;
 
 static Parameter deltime;
-
 int mode = REV;
 
 float drywet, feedback, delayTarget;
@@ -44,18 +133,10 @@ float midi_delay_ms = 750.0f;
 uint32_t last_knob_update = 0;
 uint32_t last_midi_update = 0;
 
-enum LoopState { LOOP_IDLE, LOOP_RECORDING, LOOP_PLAYING, LOOP_OVERDUBBING };
-LoopState loop_state = LOOP_IDLE;
-size_t loop_write_pos = 0;
-size_t loop_read_pos = 0;
-size_t loop_length = 0;
-
-void UpdateKnobs(float &k1, float &k2)
-{
+void UpdateKnobs(float &k1, float &k2) {
     k2 = pod.knob2.Process();
 
-    switch(mode)
-    {
+    switch(mode) {
         case REV:
             k1 = pod.knob1.Process();
             knob_drywet = k1;
@@ -73,19 +154,16 @@ void UpdateKnobs(float &k1, float &k2)
 
 void UpdateEncoder() {}
 
-void UpdateLeds(float k1, float k2)
-{
-    switch(mode)
-    {
+void UpdateLeds(float k1, float k2) {
+    switch(mode) {
         case REV:  pod.led1.Set(0, 0, k1); pod.led2.Set(0, 0, k2); break;
         case DEL:  pod.led1.Set(0, k1, 0); pod.led2.Set(0, k2, 0); break;
         case LOOP:
-            switch(loop_state)
-            {
-                case LOOP_IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
-                case LOOP_RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
-                case LOOP_PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
-                case LOOP_OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
+            switch(focused_loop->state) {
+                case LoopEngine::IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
+                case LoopEngine::RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
+                case LoopEngine::PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
+                case LoopEngine::OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
             }
             pod.led2.Set(0, 0, 0);
             break;
@@ -93,35 +171,24 @@ void UpdateLeds(float k1, float k2)
     pod.UpdateLeds();
 }
 
-void Controls()
-{
+void Controls() {
     float k1 = 0.0f, k2 = 0.0f;
     pod.ProcessAnalogControls();
     pod.ProcessDigitalControls();
 
-    if(pod.button1.RisingEdge())
-        mode = (mode + 1) % 3;
+    if(pod.button1.RisingEdge()) {
+        if(mode == LOOP)
+            focused_loop = (focused_loop == &loopA) ? &loopB : &loopA;
+        else
+            mode = (mode + 1) % 3;
+    }
 
-    if(mode == LOOP && pod.button2.RisingEdge())
-    {
-        switch(loop_state)
-        {
-            case LOOP_IDLE:
-                loop_state = LOOP_RECORDING;
-                loop_write_pos = 0;
-                break;
-            case LOOP_RECORDING:
-                loop_state = LOOP_PLAYING;
-                loop_length = loop_write_pos;
-                loop_write_pos = 0;
-                loop_read_pos = 0;
-                break;
-            case LOOP_PLAYING:
-                loop_state = LOOP_OVERDUBBING;
-                break;
-            case LOOP_OVERDUBBING:
-                loop_state = LOOP_PLAYING;
-                break;
+    if(mode == LOOP && pod.button2.RisingEdge()) {
+        switch(focused_loop->state) {
+            case LoopEngine::IDLE:        focused_loop->StartRecording(); break;
+            case LoopEngine::RECORDING:   focused_loop->StopRecording(); break;
+            case LoopEngine::PLAYING:
+            case LoopEngine::OVERDUBBING: focused_loop->ToggleOverdub(); break;
         }
     }
 
@@ -129,8 +196,7 @@ void Controls()
 
     bool midi_newer = last_midi_update > last_knob_update;
 
-    switch(mode)
-    {
+    switch(mode) {
         case REV:
             drywet = midi_newer ? midi_drywet : knob_drywet;
             rev.SetFeedback(midi_newer ? midi_feedback : knob_feedback);
@@ -146,15 +212,13 @@ void Controls()
     UpdateLeds(midi_newer ? midi_drywet : knob_drywet, midi_newer ? midi_feedback : knob_feedback);
 }
 
-void GetReverbSample(float &outl, float &outr, float inl, float inr)
-{
+void GetReverbSample(float &outl, float &outr, float inl, float inr) {
     rev.Process(inl, inr, &outl, &outr);
     outl = drywet * outl + (1 - drywet) * inl;
     outr = drywet * outr + (1 - drywet) * inr;
 }
 
-void GetDelaySample(float &outl, float &outr, float inl, float inr)
-{
+void GetDelaySample(float &outl, float &outr, float inl, float inr) {
     fonepole(currentDelay, delayTarget, .00007f);
     delr.SetDelay(currentDelay);
     dell.SetDelay(currentDelay);
@@ -169,80 +233,22 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr)
     outr = (feedback * outr) + ((1.0f - feedback) * inr);
 }
 
-void GetLoopSample(float &outl, float &outr, float inl, float inr)
-{
-    switch(loop_state)
-    {
-        case LOOP_RECORDING:
-            if(loop_write_pos < MAX_LOOP)
-            {
-                loop_buf_l[loop_write_pos] = inl;
-                loop_buf_r[loop_write_pos] = inr;
-                ++loop_write_pos;
-                outl = inl;
-                outr = inr;
-            }
-            else
-            {
-                loop_state = LOOP_PLAYING;
-                loop_length = MAX_LOOP;
-                loop_read_pos = 0;
-                outl = inl;
-                outr = inr;
-            }
-            break;
-
-        case LOOP_PLAYING:
-            if(loop_length == 0) {
-                outl = 0.0f;
-                outr = 0.0f;
-            } else {
-                outl = loop_buf_l[loop_read_pos];
-                outr = loop_buf_r[loop_read_pos];
-                loop_read_pos = (loop_read_pos + 1) % loop_length;
-            }
-            break;
-
-        case LOOP_OVERDUBBING:
-            if(loop_length == 0) {
-                outl = inl;
-                outr = inr;
-            } else {
-                float existing_l = loop_buf_l[loop_read_pos];
-                float existing_r = loop_buf_r[loop_read_pos];
-                float mixed_l = 0.5f * (existing_l + inl);
-                float mixed_r = 0.5f * (existing_r + inr);
-                loop_buf_l[loop_read_pos] = mixed_l;
-                loop_buf_r[loop_read_pos] = mixed_r;
-                outl = mixed_l;
-                outr = mixed_r;
-                loop_read_pos = (loop_read_pos + 1) % loop_length;
-            }
-            break;
-
-        case LOOP_IDLE:
-        default:
-            outl = 0.0f;
-            outr = 0.0f;
-            break;
-    }
+void GetLoopSample(float &outl, float &outr, float inl, float inr) {
+    focused_loop->Process(outl, outr, inl, inr);
 }
 
 void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                    AudioHandle::InterleavingOutputBuffer out,
-                   size_t size)
-{
+                   size_t size) {
     float outl, outr, inl, inr;
 
     Controls();
 
-    for(size_t i = 0; i < size; i += 2)
-    {
+    for(size_t i = 0; i < size; i += 2) {
         inl = in[i];
         inr = in[i + 1];
 
-        switch(mode)
-        {
+        switch(mode) {
             case REV:  GetReverbSample(outl, outr, inl, inr); break;
             case DEL:  GetDelaySample(outl, outr, inl, inr); break;
             case LOOP: GetLoopSample(outl, outr, inl, inr); break;
@@ -254,15 +260,12 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
     }
 }
 
-void HandleMidiMessage(MidiEvent m)
-{
-    switch(m.type)
-    {
+void HandleMidiMessage(MidiEvent m) {
+    switch(m.type) {
         case ControlChange:
         {
             ControlChangeEvent p = m.AsControlChange();
-            switch(p.control_number)
-            {
+            switch(p.control_number) {
                 case MIDI_CC_DRYWET:     midi_drywet = p.value / 127.0f; break;
                 case MIDI_CC_FEEDBACK:   midi_feedback = p.value / 127.0f; break;
                 case MIDI_CC_DELAY_MS:   midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
@@ -282,8 +285,7 @@ void HandleMidiMessage(MidiEvent m)
     }
 }
 
-int main(void)
-{
+int main(void) {
     float sample_rate;
     pod.Init();
     pod.SetAudioBlockSize(4);
@@ -298,8 +300,10 @@ int main(void)
         delr.Write(0.0f);
     }
     for(size_t i = 0; i < MAX_LOOP; ++i) {
-        loop_buf_l[i] = 0.0f;
-        loop_buf_r[i] = 0.0f;
+        loop_bufA_l[i] = 0.0f;
+        loop_bufA_r[i] = 0.0f;
+        loop_bufB_l[i] = 0.0f;
+        loop_bufB_r[i] = 0.0f;
     }
 
     deltime.Init(pod.knob1, MAX_DELAY, sample_rate * .05f, deltime.LOGARITHMIC);
@@ -314,8 +318,7 @@ int main(void)
     pod.StartAudio(AudioCallback);
     pod.midi.StartReceive();
 
-    while(1)
-    {
+    while(1) {
         pod.midi.Listen();
         while(pod.midi.HasEvents())
             HandleMidiMessage(pod.midi.PopEvent());
