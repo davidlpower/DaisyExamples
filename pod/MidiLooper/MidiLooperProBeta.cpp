@@ -211,6 +211,46 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr) {
     outr = (feedback * outr) + ((1.0f - feedback) * inr);
 }
 
+void GetLoopSample(float& outl, float& outr, float inl, float inr) {
+    float la = 0.0f, ra = 0.0f, lb = 0.0f, rb = 0.0f;
+    loopA.GetSample(la, ra);
+    loopB.GetSample(lb, rb);
+
+    float a_weight = 1.0f - crossfade;
+    float b_weight = crossfade;
+    outl = a_weight * la + b_weight * lb;
+    outr = a_weight * ra + b_weight * rb;
+
+    loopA.Write(inl, inr);
+    loopB.Write(inl, inr);
+}
+
+void HandleMidiMessage(MidiEvent m) {
+    switch(m.type) {
+        case ControlChange:
+        {
+            ControlChangeEvent p = m.AsControlChange();
+            switch(p.control_number) {
+                case MIDI_CC_DRYWET:     midi_drywet = p.value / 127.0f; break;
+                case MIDI_CC_FEEDBACK:   midi_feedback = p.value / 127.0f; break;
+                case MIDI_CC_DELAY_MS:   midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
+                case MIDI_CC_CROSSFADE:  midi_crossfade = p.value / 127.0f; break;
+                case MIDI_CC_MODE_CHANGE:
+                {
+                    int delta = (p.value < 63) ? -1 : (p.value > 64 ? 1 : 0);
+                    if(delta != 0)
+                        mode = (mode + delta + 3) % 3;
+                    break;
+                }
+                default: break;
+            }
+            last_midi_update = System::GetNow();
+            break;
+        }
+        default: break;
+    }
+}
+
 void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                    AudioHandle::InterleavingOutputBuffer out,
                    size_t size) {
