@@ -80,6 +80,29 @@ void Controls()
     if(pod.button1.RisingEdge())
         mode = (mode + 1) % 3;
 
+    if(mode == LOOP && pod.button2.RisingEdge())
+    {
+        switch(loop_state)
+        {
+            case LOOP_IDLE:
+                loop_state = LOOP_RECORDING;
+                loop_write_pos = 0;
+                break;
+            case LOOP_RECORDING:
+                loop_state = LOOP_PLAYING;
+                loop_length = loop_write_pos;
+                loop_write_pos = 0;
+                loop_read_pos = 0;
+                break;
+            case LOOP_PLAYING:
+                loop_state = LOOP_OVERDUBBING;
+                break;
+            case LOOP_OVERDUBBING:
+                loop_state = LOOP_PLAYING;
+                break;
+        }
+    }
+
     UpdateKnobs(k1, k2);
 
     bool midi_valid = (last_midi_update != 0);
@@ -93,6 +116,7 @@ void Controls()
             break;
 
         case DEL:
+            drywet = 0.0f;
             feedback = midi_newer ? midi_feedback : knob_feedback;
             delayTarget = pod.AudioSampleRate() * 
                 ((midi_newer ? midi_delay_ms : knob_delay_ms) / 1000.0f);
@@ -114,8 +138,6 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
 {
     float outl, outr, inl, inr;
 
-    Controls();
-
     for(size_t i = 0; i < size; i += 2)
     {
         inl = in[i];
@@ -123,11 +145,15 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
 
         switch(mode)
         {
-            case REV:  rev.Process(inl, inr, &outl, &outr); break;
+            case REV:
+                rev.Process(inl, inr, &outl, &outr);
+                break;
+
             case DEL:
-                fonepole(currentDelay, delayTarget, .00007f);
+                currentDelay += .00007f * (delayTarget - currentDelay);
                 delr.SetDelay(currentDelay);
                 dell.SetDelay(currentDelay);
+
                 outl = dell.Read();
                 outr = delr.Read();
 
@@ -137,6 +163,7 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
                 delr.Write((feedback * outr) + inr);
                 outr = (feedback * outr) + ((1.0f - feedback) * inr);
                 break;
+
             default:
                 outl = outr = 0.0f;
                 break;
@@ -189,5 +216,7 @@ int main(void)
         pod.midi.Listen();
         while(pod.midi.HasEvents())
             HandleMidiMessage(pod.midi.PopEvent());
+
+        Controls();
     }
 }
