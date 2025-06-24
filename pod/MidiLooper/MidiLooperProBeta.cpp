@@ -131,42 +131,144 @@ void UpdateKnobs(float &k1, float &k2) {
     last_knob_update = System::GetNow();
 }
 
-void GetLoopSample(float& outl, float& outr, float inl, float inr) {
-    float la = 0.0f, ra = 0.0f, lb = 0.0f, rb = 0.0f;
-    loopA.GetSample(la, ra);
-    loopB.GetSample(lb, rb);
-
-    float a_weight = 1.0f - crossfade;
-    float b_weight = crossfade;
-    outl = a_weight * la + b_weight * lb;
-    outr = a_weight * ra + b_weight * rb;
-
-    loopA.Write(inl, inr);
-    loopB.Write(inl, inr);
+void UpdateLeds(float k1, float k2) {
+    switch(mode) {
+        case REV:  pod.led1.Set(0, 0, k1); pod.led2.Set(0, 0, k2); break;
+        case DEL:  pod.led1.Set(0, k1, 0); pod.led2.Set(0, k2, 0); break;
+        case LOOP:
+            switch(focused_loop->state) {
+                case LoopEngine::IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
+                case LoopEngine::RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
+                case LoopEngine::PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
+                case LoopEngine::OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
+            }
+            pod.led2.Set(0, 0, 0);
+            break;
+    }
+    pod.UpdateLeds();
 }
 
-void HandleMidiMessage(MidiEvent m) {
-    switch(m.type) {
-        case ControlChange:
-        {
-            ControlChangeEvent p = m.AsControlChange();
-            switch(p.control_number) {
-                case MIDI_CC_DRYWET:     midi_drywet = p.value / 127.0f; break;
-                case MIDI_CC_FEEDBACK:   midi_feedback = p.value / 127.0f; break;
-                case MIDI_CC_DELAY_MS:   midi_delay_ms = 10.0f + ((p.value / 127.0f) * 2490.0f); break;
-                case MIDI_CC_CROSSFADE:  midi_crossfade = p.value / 127.0f; break;
-                case MIDI_CC_MODE_CHANGE:
-                {
-                    int delta = (p.value < 63) ? -1 : (p.value > 64 ? 1 : 0);
-                    if(delta != 0)
-                        mode = (mode + delta + 3) % 3;
-                    break;
-                }
-                default: break;
-            }
-            last_midi_update = System::GetNow();
-            break;
+void Controls() {
+    float k1 = 0.0f, k2 = 0.0f;
+    pod.ProcessAnalogControls();
+    pod.ProcessDigitalControls();
+
+    if(pod.button1.RisingEdge()) {
+        if(mode == LOOP)
+            focused_loop = (focused_loop == &loopA) ? &loopB : &loopA;
+        else
+            mode = (mode + 1) % 3;
+    }
+
+    if(mode == LOOP && pod.button2.RisingEdge()) {
+        switch(focused_loop->state) {
+            case LoopEngine::IDLE:        focused_loop->StartRecording(); break;
+            case LoopEngine::RECORDING:   focused_loop->StopRecording(); break;
+            case LoopEngine::PLAYING:
+            case LoopEngine::OVERDUBBING: focused_loop->ToggleOverdub(); break;
         }
-        default: break;
+    }
+
+    UpdateKnobs(k1, k2);
+
+    bool midi_newer = last_midi_update > last_knob_update;
+
+    switch(mode) {
+        case REV:
+            drywet = midi_newer ? midi_drywet : knob_drywet;
+            rev.SetFeedback(midi_newer ? midi_feedback : knob_feedback);
+            break;
+        case DEL:
+            feedback = midi_newer ? midi_feedback : knob_feedback;
+            delayTarget = pod.AudioSampleRate() * ((midi_newer ? midi_delay_ms : knob_delay_ms) / 1000.0f);
+            break;
+        case LOOP:
+            crossfade = midi_newer ? midi_crossfade : knob_crossfade;
+            break;
+    }
+
+    UpdateLeds(midi_newer ? knob_drywet : knob_crossfade, midi_newer ? knob_feedback : knob_crossfade);
+}
+
+void GetReverbSample(float &outl, float &outr, float inl, float inr) {
+    rev.Process(inl, inr, &outl, &outr);
+    outl = drywet * outl + (1 - drywet) * inl;
+    outr = drywet * outr + (1 - drywet) * inr;
+}
+
+void GetDelaySample(float &outl, float &outr, float inl, float inr) {
+    fonepole(currentDelay, delayTarget, .00007f);
+    delr.SetDelay(currentDelay);
+    dell.SetDelay(currentDelay);
+
+    outl = dell.Read();
+    outr = delr.Read();
+
+    dell.Write((feedback * outl) + inl);
+    outl = (feedback * outl) + ((1.0f - feedback) * inl);
+
+    delr.Write((feedback * outr) + inr);
+    outr = (feedback * outr) + ((1.0f - feedback) * inr);
+}
+
+void AudioCallback(AudioHandle::InterleavingInputBuffer in,
+                   AudioHandle::InterleavingOutputBuffer out,
+                   size_t size) {
+    float outl, outr, inl, inr;
+    Controls();
+
+    for(size_t i = 0; i < size; i += 2) {
+        inl = in[i];
+        inr = in[i + 1];
+
+        switch(mode) {
+            case REV:  GetReverbSample(outl, outr, inl, inr); break;
+            case DEL:  GetDelaySample(outl, outr, inl, inr); break;
+            case LOOP: GetLoopSample(outl, outr, inl, inr); break;
+            default:   outl = outr = 0; break;
+        }
+
+        out[i]     = outl;
+        out[i + 1] = outr;
+    }
+}
+
+int main(void) {
+    float sample_rate;
+    pod.Init();
+    pod.SetAudioBlockSize(4);
+    sample_rate = pod.AudioSampleRate();
+
+    rev.Init(sample_rate);
+    dell.Init();
+    delr.Init();
+
+    for(size_t i = 0; i < MAX_DELAY; ++i) {
+        dell.Write(0.0f);
+        delr.Write(0.0f);
+    }
+    for(size_t i = 0; i < MAX_LOOP; ++i) {
+        loop_bufA_l[i] = 0.0f;
+        loop_bufA_r[i] = 0.0f;
+        loop_bufB_l[i] = 0.0f;
+        loop_bufB_r[i] = 0.0f;
+    }
+
+    deltime.Init(pod.knob1, MAX_DELAY, sample_rate * .05f, deltime.LOGARITHMIC);
+    rev.SetLpFreq(18000.0f);
+    rev.SetFeedback(0.85f);
+
+    currentDelay = delayTarget = sample_rate * 0.75f;
+    dell.SetDelay(currentDelay);
+    delr.SetDelay(currentDelay);
+
+    pod.StartAdc();
+    pod.StartAudio(AudioCallback);
+    pod.midi.StartReceive();
+
+    while(1) {
+        pod.midi.Listen();
+        while(pod.midi.HasEvents())
+            HandleMidiMessage(pod.midi.PopEvent());
     }
 }
