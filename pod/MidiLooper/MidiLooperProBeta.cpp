@@ -109,11 +109,27 @@ LoopEngine loopA, loopB;
 
 void UpdateLeds(float k1, float k2) {
     switch(mode) {
-        case REV:  pod.led1.Set(0, 0, k1); pod.led2.Set(0, 0, k2); break;
-        case DEL:  pod.led1.Set(0, k1, 0); pod.led2.Set(0, k2, 0); break;
+        case REV:
+            pod.led1.Set(0, 0, k1);
+            pod.led2.Set(0, 0, k2);
+            break;
+        case DEL:
+            pod.led1.Set(0, k1, 0);
+            pod.led2.Set(0, k2, 0);
+            break;
         case LOOP:
-            pod.led1.Set(0.8f, 0.4f, 0.0f);
-            pod.led2.Set(0, 0, 0);
+            switch(loopA.state) {
+                case LoopEngine::IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
+                case LoopEngine::RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
+                case LoopEngine::PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
+                case LoopEngine::OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
+            }
+            switch(loopB.state) {
+                case LoopEngine::IDLE:        pod.led2.Set(0.2f, 0.2f, 0.2f); break;
+                case LoopEngine::RECORDING:   pod.led2.Set(1.0f, 0.0f, 0.0f); break;
+                case LoopEngine::PLAYING:     pod.led2.Set(0.0f, 1.0f, 0.0f); break;
+                case LoopEngine::OVERDUBBING: pod.led2.Set(0.8f, 0.4f, 0.0f); break;
+            }
             break;
     }
     pod.UpdateLeds();
@@ -145,8 +161,22 @@ void Controls() {
             knob_feedback = k2;
             break;
         case LOOP:
-            if (pod.button1.RisingEdge()) loopA.ToggleOverdub();
-            if (pod.button2.RisingEdge()) loopB.ToggleOverdub();
+            if (pod.button1.RisingEdge()) {
+                if(loopA.state == LoopEngine::IDLE)
+                    loopA.StartRecording();
+                else if(loopA.state == LoopEngine::RECORDING)
+                    loopA.StopRecording();
+                else
+                    loopA.ToggleOverdub();
+            }
+            if (pod.button2.RisingEdge()) {
+                if(loopB.state == LoopEngine::IDLE)
+                    loopB.StartRecording();
+                else if(loopB.state == LoopEngine::RECORDING)
+                    loopB.StopRecording();
+                else
+                    loopB.ToggleOverdub();
+            }
 
             if (btn1_held) {
                 loopA.length = static_cast<size_t>(k1 * MAX_LOOP);
@@ -176,6 +206,7 @@ void Controls() {
     }
 
     UpdateLeds(k1, k2);
+    last_knob_update = System::GetNow();
     last_knob_update = System::GetNow();
 }
 
