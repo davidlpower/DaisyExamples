@@ -10,7 +10,7 @@ ifeq ($(PRO),1)
 endif
 
 ifeq ($(BETA),1)
-	TARGET := $(BASE_TARGET)Pro
+	TARGET := $(BASE_TARGET)ProBeta
 	CPP_SOURCES := $(BASE_TARGET)ProBeta.cpp
 	EXTRA_FLAGS += -DBETA
 endif

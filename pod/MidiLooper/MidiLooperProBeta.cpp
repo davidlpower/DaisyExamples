@@ -90,8 +90,7 @@ struct LoopEngine {
     }
 };
 
-LoopEngine loopA = { loop_bufA_l, loop_bufA_r };
-LoopEngine loopB = { loop_bufB_l, loop_bufB_r };
+LoopEngine loopA, loopB;
 LoopEngine* focused_loop = &loopA;
 
 static Parameter deltime;
@@ -187,7 +186,26 @@ void Controls() {
             break;
     }
 
-    UpdateLeds(midi_newer ? knob_drywet : knob_crossfade, midi_newer ? knob_feedback : knob_crossfade);
+    UpdateLeds(k1, k2);
+}
+
+void GetLoopSample(float& outl, float& outr, float inl, float inr) {
+    if (loopA.length == 0 && loopB.length == 0) {
+        outl = inl;
+        outr = inr;
+    } else {
+        float la = 0.0f, ra = 0.0f, lb = 0.0f, rb = 0.0f;
+        loopA.GetSample(la, ra);
+        loopB.GetSample(lb, rb);
+
+        float a_weight = 1.0f - crossfade;
+        float b_weight = crossfade;
+        outl = a_weight * la + b_weight * lb;
+        outr = a_weight * ra + b_weight * rb;
+    }
+
+    loopA.Write(inl, inr);
+    loopB.Write(inl, inr);
 }
 
 void GetReverbSample(float &outl, float &outr, float inl, float inr) {
@@ -209,20 +227,6 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr) {
 
     delr.Write((feedback * outr) + inr);
     outr = (feedback * outr) + ((1.0f - feedback) * inr);
-}
-
-void GetLoopSample(float& outl, float& outr, float inl, float inr) {
-    float la = 0.0f, ra = 0.0f, lb = 0.0f, rb = 0.0f;
-    loopA.GetSample(la, ra);
-    loopB.GetSample(lb, rb);
-
-    float a_weight = 1.0f - crossfade;
-    float b_weight = crossfade;
-    outl = a_weight * la + b_weight * lb;
-    outr = a_weight * ra + b_weight * rb;
-
-    loopA.Write(inl, inr);
-    loopB.Write(inl, inr);
 }
 
 void HandleMidiMessage(MidiEvent m) {
@@ -294,6 +298,12 @@ int main(void) {
         loop_bufB_r[i] = 0.0f;
     }
 
+    loopA.buffer_l = loop_bufA_l;
+    loopA.buffer_r = loop_bufA_r;
+    loopB.buffer_l = loop_bufB_l;
+    loopB.buffer_r = loop_bufB_r;
+    focused_loop = &loopA;
+
     deltime.Init(pod.knob1, MAX_DELAY, sample_rate * .05f, deltime.LOGARITHMIC);
     rev.SetLpFreq(18000.0f);
     rev.SetFeedback(0.85f);
@@ -301,6 +311,15 @@ int main(void) {
     currentDelay = delayTarget = sample_rate * 0.75f;
     dell.SetDelay(currentDelay);
     delr.SetDelay(currentDelay);
+
+    // Boot confirmation flash
+    pod.led1.Set(1.0f, 1.0f, 1.0f);
+    pod.led2.Set(1.0f, 1.0f, 1.0f);
+    pod.UpdateLeds();
+    System::Delay(500);
+    pod.led1.Set(0, 0, 0);
+    pod.led2.Set(0, 0, 0);
+    pod.UpdateLeds();
 
     pod.StartAdc();
     pod.StartAudio(AudioCallback);
