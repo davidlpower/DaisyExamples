@@ -19,7 +19,6 @@ using namespace daisysp;
 using namespace daisy;
 
 static DaisyPod pod;
-
 static ReverbSc rev;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS dell;
 static DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delr;
@@ -31,17 +30,25 @@ float DSY_SDRAM_BSS loop_bufB_r[MAX_LOOP];
 
 float crossfade = 0.0f;
 float playback_speed = 1.0f;
+
 float drywet, feedback, delayTarget;
 float currentDelay;
-float knob_drywet = 0.5f, knob_feedback = 0.5f, knob_delay_ms = 750.0f;
-float midi_drywet = 0.5f, midi_feedback = 0.5f, midi_delay_ms = 750.0f;
-float knob_crossfade = 0.0f, midi_crossfade = 0.0f;
-int mode = REV;
+float knob_drywet = 0.5f;
+float knob_feedback = 0.5f;
+float knob_delay_ms = 750.0f;
+float knob_crossfade = 0.0f;
+float midi_drywet = 0.5f;
+float midi_feedback = 0.5f;
+float midi_delay_ms = 750.0f;
+float midi_crossfade = 0.0f;
 
+uint32_t last_knob_update = 0;
+uint32_t last_midi_update = 0;
 uint32_t encoder_last_moved = 0;
 const uint32_t mode_set_timeout = 2000;
 bool btn1_held = false, btn2_held = false;
-uint32_t last_knob_update = 0, last_midi_update = 0;
+
+int mode = REV;
 
 struct LoopEngine {
     float* buffer_l;
@@ -78,8 +85,8 @@ struct LoopEngine {
         if(length == 0 || state == IDLE || state == RECORDING) {
             outl = outr = 0.0f;
         } else {
-            outl = buffer_l[read_pos];
-            outr = buffer_r[read_pos];
+            outl = buffer_l[read_pos % length];
+            outr = buffer_r[read_pos % length];
             read_pos = (read_pos + static_cast<size_t>(playback_speed)) % length;
         }
     }
@@ -90,10 +97,10 @@ struct LoopEngine {
             buffer_r[write_pos] = inr;
             ++write_pos;
         } else if(state == OVERDUBBING && length > 0) {
-            float mixed_l = 0.5f * (buffer_l[read_pos] + inl);
-            float mixed_r = 0.5f * (buffer_r[read_pos] + inr);
-            buffer_l[read_pos] = mixed_l;
-            buffer_r[read_pos] = mixed_r;
+            float mixed_l = 0.5f * (buffer_l[read_pos % length] + inl);
+            float mixed_r = 0.5f * (buffer_r[read_pos % length] + inr);
+            buffer_l[read_pos % length] = mixed_l;
+            buffer_r[read_pos % length] = mixed_r;
         }
     }
 };
@@ -193,18 +200,6 @@ void GetDelaySample(float &outl, float &outr, float inl, float inr) {
     outr = (feedback * outr) + ((1.0f - feedback) * inr);
 }
 
-void GetLoopSample(float& outl, float& outr, float inl, float inr) {
-    float la = 0.0f, ra = 0.0f, lb = 0.0f, rb = 0.0f;
-    loopA.GetSample(la, ra);
-    loopB.GetSample(lb, rb);
-    float a_weight = 1.0f - crossfade;
-    float b_weight = crossfade;
-    outl = a_weight * la + b_weight * lb;
-    outr = a_weight * ra + b_weight * rb;
-    loopA.Write(inl, inr);
-    loopB.Write(inl, inr);
-}
-
 void HandleMidiMessage(MidiEvent m) {
     switch(m.type) {
         case ControlChange:
@@ -244,8 +239,18 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
         switch(mode) {
             case REV:  GetReverbSample(outl, outr, inl, inr); break;
             case DEL:  GetDelaySample(outl, outr, inl, inr); break;
-            case LOOP: GetLoopSample(outl, outr, inl, inr); break;
-            default:   outl = outr = 0; break;
+            case LOOP:
+            {
+                float la, ra, lb, rb;
+                loopA.GetSample(la, ra);
+                loopB.GetSample(lb, rb);
+                outl = (1.0f - crossfade) * la + crossfade * lb;
+                outr = (1.0f - crossfade) * ra + crossfade * rb;
+                loopA.Write(inl, inr);
+                loopB.Write(inl, inr);
+                break;
+            }
+            default: outl = outr = 0; break;
         }
 
         out[i]     = outl;
@@ -254,18 +259,30 @@ void AudioCallback(AudioHandle::InterleavingInputBuffer in,
 }
 
 int main(void) {
-    float sample_rate;
     pod.Init();
     pod.SetAudioBlockSize(4);
-    sample_rate = pod.AudioSampleRate();
+    float sample_rate = pod.AudioSampleRate();
 
     rev.Init(sample_rate);
     dell.Init();
     delr.Init();
+    rev.SetLpFreq(18000.0f);
+    rev.SetFeedback(0.85f);
+    currentDelay = delayTarget = sample_rate * 0.75f;
+
+    dell.SetDelay(currentDelay);
+    delr.SetDelay(currentDelay);
 
     for(size_t i = 0; i < MAX_DELAY; ++i) {
         dell.Write(0.0f);
         delr.Write(0.0f);
+    }
+
+    for(size_t i = 0; i < MAX_LOOP; ++i) {
+        loop_bufA_l[i] = 0.0f;
+        loop_bufA_r[i] = 0.0f;
+        loop_bufB_l[i] = 0.0f;
+        loop_bufB_r[i] = 0.0f;
     }
 
     loopA.buffer_l = loop_bufA_l;
@@ -273,26 +290,10 @@ int main(void) {
     loopB.buffer_l = loop_bufB_l;
     loopB.buffer_r = loop_bufB_r;
 
-    // Zero loop buffers before audio starts
-    for(size_t i = 0; i < MAX_LOOP; ++i) {
-        loop_bufA_l[i] = 0.0f;
-        loop_bufA_r[i] = 0.0f;
-        loop_bufB_l[i] = 0.0f;
-        loop_bufB_r[i] = 0.0f;
-    }
-
-    rev.SetLpFreq(18000.0f);
-    rev.SetFeedback(0.85f);
-
-    currentDelay = delayTarget = sample_rate * 0.75f;
-    dell.SetDelay(currentDelay);
-    delr.SetDelay(currentDelay);
-
     pod.StartAdc();
     pod.StartAudio(AudioCallback);
     pod.midi.StartReceive();
 
-    // Boot confirmation flash
     pod.led1.Set(1.0f, 1.0f, 1.0f);
     pod.led2.Set(1.0f, 1.0f, 1.0f);
     pod.UpdateLeds();
@@ -300,14 +301,6 @@ int main(void) {
     pod.led1.Set(0, 0, 0);
     pod.led2.Set(0, 0, 0);
     pod.UpdateLeds();
-
-    // Zero loop buffers
-    for(size_t i = 0; i < MAX_LOOP; ++i) {
-        loop_bufA_l[i] = 0.0f;
-        loop_bufA_r[i] = 0.0f;
-        loop_bufB_l[i] = 0.0f;
-        loop_bufB_r[i] = 0.0f;
-    }
 
     while(1) {
         pod.midi.Listen();
