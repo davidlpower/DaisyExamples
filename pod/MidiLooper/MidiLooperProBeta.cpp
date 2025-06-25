@@ -1,5 +1,6 @@
 #include "daisysp.h"
 #include "daisy_pod.h"
+#include "daisy_core.h"
 #include <cstdio>
 
 #define MIDI_CC_DRYWET     10
@@ -45,6 +46,8 @@ float midi_crossfade = 0.0f;
 uint32_t last_knob_update = 0;
 uint32_t last_midi_update = 0;
 uint32_t encoder_last_moved = 0;
+uint32_t last_blink_time = 0;
+bool led_blink_state = false;
 const uint32_t mode_set_timeout = 2000;
 bool btn1_held = false, btn2_held = false;
 
@@ -54,7 +57,7 @@ struct LoopEngine {
     float* buffer_l;
     float* buffer_r;
     size_t write_pos = 0;
-    size_t read_pos = 0;
+    float read_pos = 0.0f;
     size_t length = 0;
     enum State { IDLE, RECORDING, PLAYING, OVERDUBBING } state = IDLE;
 
@@ -85,9 +88,16 @@ struct LoopEngine {
         if(length == 0 || state == IDLE || state == RECORDING) {
             outl = outr = 0.0f;
         } else {
-            outl = buffer_l[read_pos % length];
-            outr = buffer_r[read_pos % length];
-            read_pos = (read_pos + static_cast<size_t>(playback_speed)) % length;
+            size_t idx1 = static_cast<size_t>(read_pos) % length;
+            size_t idx2 = (idx1 + 1) % length;
+            float frac = read_pos - static_cast<float>(idx1);
+
+            outl = buffer_l[idx1] * (1.0f - frac) + buffer_l[idx2] * frac;
+            outr = buffer_r[idx1] * (1.0f - frac) + buffer_r[idx2] * frac;
+
+            read_pos += playback_speed;
+            if(read_pos >= length)
+                read_pos -= length;
         }
     }
 
@@ -97,10 +107,11 @@ struct LoopEngine {
             buffer_r[write_pos] = inr;
             ++write_pos;
         } else if(state == OVERDUBBING && length > 0) {
-            float mixed_l = 0.5f * (buffer_l[read_pos % length] + inl);
-            float mixed_r = 0.5f * (buffer_r[read_pos % length] + inr);
-            buffer_l[read_pos % length] = mixed_l;
-            buffer_r[read_pos % length] = mixed_r;
+            size_t rpos = static_cast<size_t>(read_pos) % length;
+            float mixed_l = 0.5f * (buffer_l[rpos] + inl);
+            float mixed_r = 0.5f * (buffer_r[rpos] + inr);
+            buffer_l[rpos] = mixed_l;
+            buffer_r[rpos] = mixed_r;
         }
     }
 };
@@ -108,29 +119,53 @@ struct LoopEngine {
 LoopEngine loopA, loopB;
 
 void UpdateLeds(float k1, float k2) {
-    switch(mode) {
-        case REV:
-            pod.led1.Set(0, 0, k1);
-            pod.led2.Set(0, 0, k2);
-            break;
-        case DEL:
-            pod.led1.Set(0, k1, 0);
-            pod.led2.Set(0, k2, 0);
-            break;
-        case LOOP:
-            switch(loopA.state) {
-                case LoopEngine::IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
-                case LoopEngine::RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
-                case LoopEngine::PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
-                case LoopEngine::OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
-            }
-            switch(loopB.state) {
-                case LoopEngine::IDLE:        pod.led2.Set(0.2f, 0.2f, 0.2f); break;
-                case LoopEngine::RECORDING:   pod.led2.Set(1.0f, 0.0f, 0.0f); break;
-                case LoopEngine::PLAYING:     pod.led2.Set(0.0f, 1.0f, 0.0f); break;
-                case LoopEngine::OVERDUBBING: pod.led2.Set(0.8f, 0.4f, 0.0f); break;
-            }
-            break;
+    uint32_t now = System::GetNow();
+
+    if (mode == LOOP && (btn1_held || btn2_held)) {
+        float blink_interval = 500.0f;
+        if (btn1_held) {
+            blink_interval = 30.0f + 120.0f * (1.0f - (loopA.length / (float)MAX_LOOP));
+        } else if (btn2_held) {
+            blink_interval = 30.0f + 120.0f * (1.0f - (loopB.length / (float)MAX_LOOP));
+        }
+
+        if (now - last_blink_time >= static_cast<uint32_t>(blink_interval)) {
+            led_blink_state = !led_blink_state;
+            last_blink_time = now;
+        }
+
+        pod.led1.Set(led_blink_state && btn1_held ? 1.0f : 0.0f,
+                     led_blink_state && btn1_held ? 1.0f : 0.0f,
+                     led_blink_state && btn1_held ? 1.0f : 0.0f);
+
+        pod.led2.Set(led_blink_state && btn2_held ? 1.0f : 0.0f,
+                     led_blink_state && btn2_held ? 1.0f : 0.0f,
+                     led_blink_state && btn2_held ? 1.0f : 0.0f);
+    } else {
+        switch(mode) {
+            case REV:
+                pod.led1.Set(0, 0, k1);
+                pod.led2.Set(0, 0, k2);
+                break;
+            case DEL:
+                pod.led1.Set(0, k1, 0);
+                pod.led2.Set(0, k2, 0);
+                break;
+            case LOOP:
+                switch(loopA.state) {
+                    case LoopEngine::IDLE:        pod.led1.Set(0.2f, 0.2f, 0.2f); break;
+                    case LoopEngine::RECORDING:   pod.led1.Set(1.0f, 0.0f, 0.0f); break;
+                    case LoopEngine::PLAYING:     pod.led1.Set(0.0f, 1.0f, 0.0f); break;
+                    case LoopEngine::OVERDUBBING: pod.led1.Set(0.8f, 0.4f, 0.0f); break;
+                }
+                switch(loopB.state) {
+                    case LoopEngine::IDLE:        pod.led2.Set(0.2f, 0.2f, 0.2f); break;
+                    case LoopEngine::RECORDING:   pod.led2.Set(1.0f, 0.0f, 0.0f); break;
+                    case LoopEngine::PLAYING:     pod.led2.Set(0.0f, 1.0f, 0.0f); break;
+                    case LoopEngine::OVERDUBBING: pod.led2.Set(0.8f, 0.4f, 0.0f); break;
+                }
+                break;
+        }
     }
     pod.UpdateLeds();
 }
@@ -178,11 +213,11 @@ void Controls() {
                     loopB.ToggleOverdub();
             }
 
-            if (btn1_held) {
-                loopA.length = static_cast<size_t>(k1 * MAX_LOOP);
-            } else if (btn2_held) {
-                loopB.length = static_cast<size_t>(k2 * MAX_LOOP);
-            } else {
+            if (btn1_held && loopA.state == LoopEngine::IDLE) {
+    loopA.length = static_cast<size_t>(k1 * MAX_LOOP);
+} else if (btn2_held && loopB.state == LoopEngine::IDLE) {
+    loopB.length = static_cast<size_t>(k2 * MAX_LOOP);
+} else {
                 playback_speed = 0.5f + k1;
                 knob_crossfade = k2;
             }
