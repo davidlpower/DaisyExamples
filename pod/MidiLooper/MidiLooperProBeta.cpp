@@ -59,10 +59,14 @@ struct LoopEngine {
     size_t write_pos = 0;
     float read_pos = 0.0f;
     size_t length = 0;
+    float gain_out = 1.0f;
+    bool write_enable = true;
     enum State { IDLE, RECORDING, PLAYING, OVERDUBBING } state = IDLE;
 
     void Reset() {
-        write_pos = read_pos = length = 0;
+        write_pos = 0;
+        read_pos = 0.0f;
+        length = 0;
         state = IDLE;
     }
 
@@ -84,6 +88,26 @@ struct LoopEngine {
             state = PLAYING;
     }
 
+    void SetLength(size_t len) {
+        length = len;
+    }
+
+    void SetGain(float g) {
+        gain_out = g;
+    }
+
+    void SetWriteEnable(bool enable) {
+        write_enable = enable;
+    }
+
+    State GetState() const {
+        return state;
+    }
+
+    size_t GetLength() const {
+        return length;
+    }
+
     void GetSample(float& outl, float& outr) {
         if(length == 0 || state == IDLE || state == RECORDING) {
             outl = outr = 0.0f;
@@ -92,8 +116,8 @@ struct LoopEngine {
             size_t idx2 = (idx1 + 1) % length;
             float frac = read_pos - static_cast<float>(idx1);
 
-            outl = buffer_l[idx1] * (1.0f - frac) + buffer_l[idx2] * frac;
-            outr = buffer_r[idx1] * (1.0f - frac) + buffer_r[idx2] * frac;
+            outl = (buffer_l[idx1] * (1.0f - frac) + buffer_l[idx2] * frac) * gain_out;
+            outr = (buffer_r[idx1] * (1.0f - frac) + buffer_r[idx2] * frac) * gain_out;
 
             read_pos += playback_speed;
             if(read_pos >= length)
@@ -102,6 +126,9 @@ struct LoopEngine {
     }
 
     void Write(float inl, float inr) {
+        if(!write_enable)
+            return;
+
         if(state == RECORDING && write_pos < MAX_LOOP) {
             buffer_l[write_pos] = inl;
             buffer_r[write_pos] = inr;
